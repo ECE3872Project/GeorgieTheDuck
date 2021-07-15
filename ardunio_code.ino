@@ -21,13 +21,20 @@
 #include <Servo.h>
 #include <stdio.h>
 #include <math.h>
-//#include <TimedAction.h>
+#include <TimedAction.h>
 #include <Wire.h>
 //#include "Adafruit_TPA2016.h"
+#include "PinChangeInt.h" // PinChange Interrupt library
 
 #define TempoCal 512
 #define TempoPotMax 1023
+#define OctaveHigh 800
+#define OctaveLow 500
+#define OctavePotMax 1023
 #define PwmMax 255
+//mic min and max
+#define mic_threshold 700
+
 
 #define rest 0
 
@@ -48,6 +55,7 @@
 #define speakerPIN 5
 #define sycnPIN 3
 #define stop_btn 2
+#define play_btn 6
 #define leftwingPIN 10
 #define rightwingPIN 11
 //stop light
@@ -57,6 +65,8 @@
 //running light 
 #define green_led 8 
 int conductorSignal = A3;
+
+
 
 //states
 enum state 
@@ -71,6 +81,9 @@ enum state
 bool stop = false;
 bool fly = false;
 int timerCounter = 0;
+bool sync_time = true; //Varible will keep the sync thread from constant updats
+int sync_count = 0; // count down till sync fails
+int time_ups = 50; // after 2 ful plays just go to sync mode
 
 //Row Row Row Your Boat
 int songLength = 54;  
@@ -83,36 +96,57 @@ int pos;
 Servo left_wing;
 Servo right_wing;
 
-////// setting thr begining state
+////// setting the begining state
 int pastState = ST_PLAY;
-int currentState = ST_PLAY;
+//int currentState = ST_PLAY;
 //int currentState = ST_SYNC;
+int currentState = ST_IDLE;
 
-///// speaker
-//Adafruit_TPA2016 audioamp = Adafruit_TPA2016();
+//threads
+//Functio looks at mic value and see if it hears the song
+void sync_check(){
+  if(sync_time){// if sync time not over
+    sync_count++;
+    int mic = analogRead(A0);
+    if (mic >= mic_threshold){
+      currentState = ST_SYNC;
+    }
+    sync_time = false;
+  }
+  //if over test time
+  if (sync_count >= time_ups && sync_time){
+  	currentState = ST_SYNC;
+    sync_time = false;
+  }
+}
+//This thread checks the mic every 400 millsec for a sound
+TimedAction sycThread = TimedAction(400,sync_check);
 
 
 void setup()
 {
+  //sensors and potentiometer
   pinMode(A0, INPUT); //tempo senor
   pinMode(A1, INPUT);// box sensor
   pinMode(A3, INPUT); // sync mode, mic activated
   pinMode(A4, INPUT); // octave
   
   
-  //audioamp.begin();//amp
-  
-    //set up outputs
+  //set up outputs
   pinMode(speakerPIN, OUTPUT);
   pinMode(red_led, OUTPUT);
   pinMode(yellow_led, OUTPUT);
   pinMode(green_led, OUTPUT);
+  
   pinMode(sycnPIN, INPUT_PULLUP);
   pinMode(stop_btn, INPUT_PULLUP);
+  pinMode(play_btn, INPUT);
+  
   
   //attachInterrupt(A3, syncing, RISING);
   attachInterrupt(digitalPinToInterrupt(sycnPIN), syncing, RISING);
   attachInterrupt(digitalPinToInterrupt(stop_btn), stopping, RISING);
+  //attachPinChangeInterrupt(play_btn, playing, RISING); // interrupt connected to pin 11}
   
 
   left_wing.attach(leftwingPIN);
@@ -122,6 +156,7 @@ void setup()
   Serial.begin(9600);
   Serial.print("Setup Complete\n");
 }
+
 
 
 //stop button pressed so change state
@@ -160,21 +195,25 @@ void flapping() {
 //syncing with tempo
 void syncing(){
 	currentState = ST_SYNC;
+  	sync_time = false; 
 }
-//threads 
-//cannot use other libarires in tickercad so save for another day
-//TimedAction wingThread = TimedAction(700, flapping);
+
+//play button
+void playing(){
+	currentState = ST_PLAY;
+}
 
 void loop()
 {
   int duration;                  
   int tempo;
   int tempo_pot;
+  int octave;
   int octave_pot;
   int motor_speed;
   static const uint8_t analog_pins[] = {A2,A3,A4,A5};
   int i_note_index = 0;
-  //wingThread.check();
+  sycThread.check();
   
   Serial.print("looping\n");
   switch (currentState) {
@@ -188,28 +227,34 @@ void loop()
     case ST_STOP:
        // do something in the stop state
         Serial.print("stop\n");
-    	digitalWrite(red_led, HIGH); //turn off the red LED
+      	digitalWrite(red_led, HIGH); //turn off the red LED
         digitalWrite(yellow_led, LOW);  //turn off the yellow LED
         digitalWrite(green_led, LOW); //turn off the green LED
         fly = false; //stop motor
        break;
     case ST_PLAY:
        // do something in the play state
-    	Serial.print("play\n");
+      	Serial.print("play\n");
         digitalWrite(red_led, LOW); //turn off the red LED
         digitalWrite(yellow_led, LOW);  //turn off the yellow LED
         digitalWrite(green_led, HIGH); //turn on the green LED
     	 //move wings
-    	fly = true;
+    	  fly = true;
         flapping();
         //song setup
         tempo_pot = analogRead(A0);//read the tempo pot
-    	octave_pot = analogRead(A4);//read the octave pot
         tempo = song_tempo*float(tempo_pot)/TempoCal; //read the tempo POT
-
+		    octave_pot = analogRead(A4);//read the octave pot
+    	if(octave_pot >= OctaveHigh)
+           octave = pow(2,Octive); // raise 1 hz
+        else if(octave_pot <= OctaveLow)
+           octave = (1/pow(2,Octive)); // lower 1 hz
+      	else
+         	octave = 1; // no pith change 
+    
         //play the song
         duration = beats[i_note_index] * tempo;
-        tone(speakerPIN, notes[i_note_index], duration);
+        tone(speakerPIN, notes[i_note_index]*octave, duration);
         delay(duration);
 		
         //increment the note counter
@@ -226,6 +271,7 @@ void loop()
         digitalWrite(yellow_led, HIGH);  //turn on the yellow LED
         digitalWrite(green_led, LOW); //turn off the green LED
         fly = false; //stop motor
+    
         // do whatever whe do for syncing
     	delay(2000);
     	currentState = ST_PLAY;
@@ -234,4 +280,3 @@ void loop()
     // etc...
 }
 }
-
