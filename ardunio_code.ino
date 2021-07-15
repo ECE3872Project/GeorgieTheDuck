@@ -121,6 +121,7 @@ void sync_check(){
 }
 //This thread checks the mic every 400 millsec for a sound
 TimedAction sycThread = TimedAction(400,sync_check);
+TimedAction wings = TimedAction(500,flapping);
 
 
 void setup()
@@ -214,6 +215,7 @@ void loop()
   static const uint8_t analog_pins[] = {A2,A3,A4,A5};
   int i_note_index = 0;
   sycThread.check();
+  wings.check();
   
   Serial.print("looping\n");
   switch (currentState) {
@@ -240,7 +242,6 @@ void loop()
         digitalWrite(green_led, HIGH); //turn on the green LED
     	 //move wings
     	  fly = true;
-        flapping();
         //song setup
         tempo_pot = analogRead(A0);//read the tempo pot
         tempo = song_tempo*float(tempo_pot)/TempoCal; //read the tempo POT
